@@ -104,6 +104,7 @@ import           GHC                                               (AddEpAnn (Ad
                                                                     EpaLocation (..),
                                                                     LEpaComment,
                                                                     LocatedA)
+import qualified GHC.Data.EnumSet as ES
 #else
 import           Language.Haskell.GHC.ExactPrint.Types             (Annotation (annsDP),
                                                                     DeltaPos,
@@ -243,7 +244,7 @@ extendImportHandler' ideState ExtendImport {..}
                   extendImport (T.unpack <$> thingParent) (T.unpack newThing) (makeDeltaAst imp)
 
         Nothing -> do
-            let n = newImport importName sym importQual False
+            let n = newImport importName sym importQual False (isPostQualifiedImport df)
                 sym = if isNothing importQual then Just it else Nothing
                 it = case thingParent of
                   Nothing -> newThing
@@ -252,6 +253,11 @@ extendImportHandler' ideState ExtendImport {..}
             return (nfp, WorkspaceEdit {_changes=Just (GHC.Exts.fromList [(doc,List [t])]), _documentChanges=Nothing, _changeAnnotations=Nothing})
   | otherwise =
     mzero
+
+isPostQualifiedImport :: DynFlags -> Bool
+isPostQualifiedImport df = hasImportQualifedPostEnabled && hasPrePositiveQualifiedWarning
+    where hasImportQualifedPostEnabled = ES.member  ImportQualifiedPost (extensionFlags df)
+          hasPrePositiveQualifiedWarning = ES.member Opt_WarnPrepositiveQualifiedModule (warningFlags df)
 
 isWantedModule :: ModuleName -> Maybe ModuleName -> GenLocated l (ImportDecl GhcPs) -> Bool
 isWantedModule wantedModule Nothing (L _ it@ImportDecl{ideclName, ideclHiding = Just (False, _)}) =
@@ -1639,8 +1645,9 @@ newImport
   -> Maybe T.Text -- ^  the symbol
   -> Maybe T.Text -- ^ qualified name
   -> Bool -- ^ the symbol is to be imported or hidden
+  -> Bool -- ^ the qualified name is to be imported in postfix position
   -> NewImport
-newImport modName mSymbol mQual hiding = NewImport impStmt
+newImport modName mSymbol mQual hiding postfix = NewImport impStmt
   where
      symImp
             | Just symbol <- mSymbol
@@ -1649,20 +1656,22 @@ newImport modName mSymbol mQual hiding = NewImport impStmt
             | otherwise = ""
      impStmt =
        "import "
-         <> maybe "" (const "qualified ") mQual
-         <> modName
+         <> qualifiedModName
          <> (if hiding then " hiding" else "")
          <> symImp
          <> maybe "" (\qual -> if modName == qual then "" else " as " <> qual) mQual
+     qualifiedModName | isJust mQual && postfix = modName <> " qualified"
+                      | isJust mQual = "qualified " <> modName
+                      | otherwise = ""
 
 newQualImport :: T.Text -> T.Text -> NewImport
-newQualImport modName qual = newImport modName Nothing (Just qual) False
+newQualImport modName qual = newImport modName Nothing (Just qual) False False
 
 newUnqualImport :: T.Text -> T.Text -> Bool -> NewImport
-newUnqualImport modName symbol = newImport modName (Just symbol) Nothing
+newUnqualImport modName symbol hiding  = newImport modName (Just symbol) Nothing hiding False
 
 newImportAll :: T.Text -> NewImport
-newImportAll modName = newImport modName Nothing Nothing False
+newImportAll modName = newImport modName Nothing Nothing False False
 
 hideImplicitPreludeSymbol :: T.Text -> NewImport
 hideImplicitPreludeSymbol symbol = newUnqualImport "Prelude" symbol True
